@@ -1,0 +1,63 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kitaab Saathi</title><link rel="manifest" href="manifest.json"><link rel="icon" href="icon.svg">
+<style>
+:root{--bg:#f3efe6;--ink:#1c2420;--mut:#5d675f;--card:#fffdf8;--line:#d9d2c0;--g:#1d3a2f;--hi:#ffe27a;color-scheme:light}
+@media(prefers-color-scheme:dark){:root{--bg:#141a17;--ink:#ece8dc;--mut:#98a39a;--card:#1c2420;--line:#2f3a34;--g:#8fd1ab;--hi:#6b5a10;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 Georgia,"Noto Naskh Arabic",serif;padding:env(safe-area-inset-top) 0 40px}
+main{max-width:760px;margin:0 auto;padding:20px 16px}
+h1{font-size:2rem;margin:.2em 0 0;letter-spacing:-.01em}.sub{color:var(--mut);margin:0 0 18px;font-family:system-ui,sans-serif;font-size:.9rem}
+.net{font:600 .8rem system-ui;padding:2px 10px;border:1px solid var(--line);border-radius:99px;margin-left:8px;vertical-align:middle}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:18px;text-align:center;font-family:system-ui,sans-serif;background:var(--card)}
+button,.btn{font:600 .95rem system-ui;background:var(--g);color:var(--bg);border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--hi);outline-offset:2px}
+.row{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}input[type=text],select{flex:1;min-width:0;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+.ans{background:var(--card);border-left:5px solid var(--g);padding:14px 16px;margin:14px 0;border-radius:0 8px 8px 0}
+.ans .best{font-size:1.15rem}.ans small,.pg{font:.8rem system-ui;color:var(--mut)}.pg{cursor:pointer;background:none;color:var(--g);border:1px solid var(--line);padding:2px 10px;border-radius:99px;margin-right:6px}
+mark{background:var(--hi);color:inherit;padding:0 2px}#status{font:.9rem system-ui;color:var(--mut)}
+dialog{max-width:96vw;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}canvas{max-width:100%;height:auto}
+.bk{font:.9rem system-ui}.bk button{background:none;color:var(--mut);padding:0 6px}
+</style></head><body><main>
+<h1>Kitaab Saathi<span class="net" id="net"></span></h1>
+<p class="sub">Apni kitaab se sawal poochho. Jawab usi kitaab ke page number ke saath. Poora kaam is device par, internet ke baghair.</p>
+<div class="drop"><label>PDF kitaab chuno: <input type="file" id="f" accept="application/pdf"></label><div id="status" role="status"></div></div>
+<div class="row"><select id="books" aria-label="Kitaab"></select><button id="del" title="Is kitaab ko hata do">Hatao</button></div>
+<div class="row"><input type="text" id="q" placeholder="Sawal likho, jaise: photosynthesis kya hai?" aria-label="Sawal" dir="auto"><button id="go">Dhoondo</button></div>
+<div id="out"></div></main>
+<dialog id="dlg"><div class="bk"><button id="prev">&larr;</button><span id="pn"></span><button id="next">&rarr;</button><button id="x">Band</button></div><canvas id="cv"></canvas></dialog>
+<script type="module">
+import * as pdfjs from './vendor/pdf.min.mjs';
+pdfjs.GlobalWorkerOptions.workerSrc='./vendor/pdf.worker.min.mjs';
+const $=s=>document.querySelector(s),esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+const net=()=>{$('#net').textContent=navigator.onLine?'online':'offline ✓'};addEventListener('online',net);addEventListener('offline',net);net();
+// --- IndexedDB
+const db=new Promise((ok,no)=>{const r=indexedDB.open('kitaab',1);r.onupgradeneeded=()=>r.result.createObjectStore('books',{keyPath:'id'});r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});
+const tx=async(m,fn)=>{const d=await db;return new Promise((ok,no)=>{const t=d.transaction('books',m),q=fn(t.objectStore('books'));t.oncomplete=()=>ok(q&&q.result);t.onerror=()=>no(t.error)})};
+// --- text & BM25
+const STOP=new Set('a an the is are was were of in on at to for and or what how why who when which does do did it this that with by as be from kya hai hain ka ki ke se mein ko aur'.split(' '));
+const tok=s=>(s.toLowerCase().match(/[\p{L}\p{N}]+/gu)||[]).map(w=>w.length>3&&w.endsWith('s')?w.slice(0,-1):w);
+const qtok=s=>tok(s).filter(w=>!STOP.has(w)&&w.length>1);
+function chunk(pages){const out=[];pages.forEach((t,i)=>{const s=t.split(/(?<=[.!?۔؟])\s+/).filter(x=>x.trim().length>2);for(let j=0;j<s.length;j+=2)out.push({p:i+1,s:s.slice(j,j+3)})});return out}
+function index(chunks){const df={};let len=0;chunks.forEach(c=>{c.t=tok(c.s.join(' '));len+=c.t.length;c.tf={};c.t.forEach(w=>c.tf[w]=(c.tf[w]||0)+1);new Set(c.t).forEach(w=>df[w]=(df[w]||0)+1)});return{chunks,df,avg:len/Math.max(1,chunks.length)}}
+function search(ix,q,k=3){const qs=qtok(q),N=ix.chunks.length,res=[];for(const c of ix.chunks){let sc=0;for(const w of qs){const f=c.tf[w];if(!f)continue;const n=ix.df[w];sc+=Math.log(1+(N-n+.5)/(n+.5))*f*2.2/(f+1.2*(.25+.75*c.t.length/ix.avg))}if(sc>0)res.push({c,sc})}return{qs,hits:res.sort((a,b)=>b.sc-a.sc).slice(0,k)}}
+const mark=(t,qs)=>esc(t).replace(/[\p{L}\p{N}]+/gu,w=>qs.includes(tok(w)[0])?`<mark>${w}</mark>`:w);
+// --- state
+let cur=null,ix=null,doc=null,pg=1;
+async function refresh(sel){const all=await tx('readonly',s=>s.getAll())||[];$('#books').innerHTML=all.length?all.map(b=>`<option value="${b.id}">${esc(b.name)} (${b.pages.length} pages)</option>`).join(''):'<option value="">Abhi koi kitaab nahi</option>';if(sel)$('#books').value=sel;await pick()}
+async function pick(){const id=$('#books').value;doc=null;ix=null;cur=null;if(!id)return;cur=await tx('readonly',s=>s.get(id));ix=index(chunk(cur.pages))}
+$('#books').onchange=pick;
+$('#del').onclick=async()=>{if(cur&&confirm('Hata dein: '+cur.name+'?')){await tx('readwrite',s=>s.delete(cur.id));$('#out').innerHTML='';refresh()}};
+$('#f').onchange=async e=>{const f=e.target.files[0];if(!f)return;const st=$('#status');try{const data=await f.arrayBuffer(),blob=new Blob([data],{type:'application/pdf'}),d=await pdfjs.getDocument({data:data.slice(0)}).promise,pages=[];
+for(let i=1;i<=d.numPages;i++){const t=await(await d.getPage(i)).getTextContent();pages.push(t.items.map(x=>x.str).join(' ').replace(/\s+/g,' ').trim());st.textContent=`Index ho raha hai: page ${i}/${d.numPages}`}
+const chars=pages.join('').length;if(chars<50){st.textContent='Is PDF mein text nahi mila (scan ki hui lagti hai). Text wali PDF chuno.';return}
+const id=crypto.randomUUID();await tx('readwrite',s=>s.put({id,name:f.name.replace(/\.pdf$/i,''),pages,blob}));st.textContent=`Tayyar: ${d.numPages} pages. Ab sawal poochho.`;await refresh(id)}catch(err){st.textContent='PDF nahi khuli: '+err.message}};
+function ask(){const q=$('#q').value.trim(),o=$('#out');if(!q)return;if(!ix){o.textContent='Pehle ek PDF kitaab chuno.';return}
+const{qs,hits}=search(ix,q);if(!hits.length){o.innerHTML='<p>Is kitaab mein iska jawab nahi mila. Alfaaz badal kar dobara poochho.</p>';return}
+const top=hits[0].c,best=top.s.map(x=>({x,n:new Set(tok(x).filter(w=>qs.includes(w))).size})).sort((a,b)=>b.n-a.n)[0].x;
+o.innerHTML=`<div class="ans"><div class="best">${mark(best,qs)}</div><small>Kitaab, page ${top.p}</small></div>`+hits.map(h=>`<div class="ans"><button class="pg" data-p="${h.c.p}">Page ${h.c.p} kholo</button><div>${mark(h.c.s.join(' '),qs)}</div></div>`).join('')}
+$('#go').onclick=ask;$('#q').onkeydown=e=>{if(e.key==='Enter')ask()};
+$('#out').onclick=e=>{const p=e.target.dataset?.p;if(p)show(+p)};
+async function show(n){if(!doc)doc=await pdfjs.getDocument({data:await cur.blob.arrayBuffer()}).promise;pg=Math.min(Math.max(1,n),doc.numPages);const page=await doc.getPage(pg),v=page.getViewport({scale:1.4}),c=$('#cv');c.width=v.width;c.height=v.height;await page.render({canvasContext:c.getContext('2d'),viewport:v}).promise;$('#pn').textContent=` Page ${pg}/${doc.numPages} `;if(!$('#dlg').open)$('#dlg').showModal()}
+$('#prev').onclick=()=>show(pg-1);$('#next').onclick=()=>show(pg+1);$('#x').onclick=()=>$('#dlg').close();
+refresh();
+</script></body></html>
